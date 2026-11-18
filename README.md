@@ -20,7 +20,7 @@ target, so a network probe is an attack, not a scan. And because the app usually
 
 ## Usage
 
-Python 3.8+, standard library only. Run as root on Linux to see every JVM's environment and attach `jcmd`.
+Python 3.8+ (CI tests 3.10 to 3.13), standard library only. Run as root on Linux to see every JVM's environment and attach `jcmd`.
 
 ```bash
 sudo ./java2shell_detect.py
