@@ -3,7 +3,7 @@ on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  test:
+  python:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -16,3 +16,61 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m unittest -v tests/test_detect.py
       - run: python java2shell_detect.py --no-color || test $? -le 2
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [pwsh, powershell]
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pester tests
+        run: |
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -MinimumVersion 5.5.0
+          $r = Invoke-Pester -Path tests/java2shell-detect.Tests.ps1 -Output Detailed -PassThru
+          if ($r.FailedCount -gt 0 -or $r.PassedCount -eq 0) { exit 1 }
+
+      # A real, affected runtime for the end-to-end check.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17.0.12"
+
+      - name: Scan with two live JVMs
+        run: |
+          Set-Content Sleep.java 'public class Sleep { public static void main(String[] a) throws Exception { Thread.sleep(300000); } }'
+          $java = Join-Path $env:JAVA_HOME 'bin\java.exe'
+          $plain = Start-Process $java -ArgumentList 'Sleep.java' -PassThru -WindowStyle Hidden
+          $mitig = Start-Process $java -ArgumentList '-XX:-UseBASE64Intrinsics', 'Sleep.java' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 15
+
+          .\java2shell-detect.ps1 -NoColor
+          $code = $LASTEXITCODE
+          Write-Host "exit=$code"
+          if ($code -gt 2) { exit 1 }
+
+          $json = .\java2shell-detect.ps1 -Json | Out-String | ConvertFrom-Json
+          $fails = @()
+          $affected = @('VULNERABLE', 'AFFECTED_VERSION_CPU_NOT_EXPOSED')
+          $mitigatedOk = @('MITIGATED', 'AFFECTED_VERSION_CPU_NOT_EXPOSED')
+          $p1 = $json.Findings | Where-Object { $_.Pid -eq $plain.Id }
+          $p2 = $json.Findings | Where-Object { $_.Pid -eq $mitig.Id }
+          $inst = $json.Findings | Where-Object { $_.Kind -eq 'install' -and $_.Version -eq '17.0.12' }
+          if (-not $p1) { $fails += 'plain JVM not found' }
+          elseif ($p1.Verdict -notin $affected) { $fails += "plain JVM verdict $($p1.Verdict)" }
+          elseif (-not $p1.Jcmd) { $fails += 'jcmd did not attach to plain JVM' }
+          if (-not $p2) { $fails += 'mitigated JVM not found' }
+          elseif ($p2.Verdict -notin $mitigatedOk) { $fails += "mitigated JVM verdict $($p2.Verdict)" }
+          elseif ($p2.Jcmd -and $p2.Jcmd.Flags.UseBASE64Intrinsics -ne $false) { $fails += 'live flag not read as false' }
+          if (-not $inst) { $fails += 'Temurin 17.0.12 install not found' }
+          Write-Host "CPU: $($json.Cpu.Source) capable=$($json.Cpu.Capable)"
+          Stop-Process -Id $plain.Id, $mitig.Id -Force -ErrorAction SilentlyContinue
+          if ($fails) { $fails | ForEach-Object { Write-Host "FAIL: $_" }; exit 1 }
+          Write-Host 'end-to-end checks passed'
+          exit 0
