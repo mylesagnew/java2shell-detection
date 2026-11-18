@@ -142,3 +142,7 @@ python3 -m unittest -v tests/test_detect.py
 ```powershell
 Invoke-Pester -Path tests\java2shell-detect.Tests.ps1 -Output Detailed
 ```
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
