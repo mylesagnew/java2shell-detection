@@ -1,6 +1,6 @@
 # java2shell-detect
 
-Host-side exposure check for **CVE-2026-114938** (Java2Shell / Java4Shell): a heap overflow in
+Host-side exposure check for **CVE-2026-114938**, for Linux/macOS (Python) and Windows (PowerShell) (Java2Shell / Java4Shell): a heap overflow in
 HotSpot's AVX-512 VBMI `java.util.Base64` decode intrinsic.
 
 A JVM is exposed only when all three hold, and this tool checks each one:
@@ -47,6 +47,54 @@ mkdir img && docker export <container> | tar -x -C img && ./java2shell_detect.py
 
 JVMs running inside containers are found from the host through `/proc/<pid>/root`.
 
+## Windows (PowerShell)
+
+`java2shell-detect.ps1` is the Windows edition: same checks, verdicts and exit codes, no Python
+needed. Runs on Windows PowerShell 5.1 and PowerShell 7+. Run it elevated so it can read every
+process.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\java2shell-detect.ps1
+```
+
+```powershell
+.\java2shell-detect.ps1 -Json | Out-File "java2shell-$env:COMPUTERNAME.json"
+```
+
+| Option | Effect |
+|---|---|
+| `-Path DIR` | extra search root (repeatable), e.g. an appliance or product install folder |
+| `-Deep` | search every fixed drive |
+| `-MaxDepth N` | directory depth per root (default 6) |
+| `-NoJcmd` | don't attach to running JVMs |
+| `-AssumeCpuCapable` | treat the CPU as exposed |
+| `-NoInstalls` / `-NoProcesses` | skip one half of the scan |
+| `-Json`, `-NoColor` | output format |
+
+What is Windows-specific:
+
+- **Running JVMs are found by the `jvm.dll` they load**, not by process name, so service wrappers
+  such as Tomcat/procrun (`tomcat9.exe`, used by Jira and Confluence) are covered too.
+- **Service JVM options** are read from the procrun registry key
+  (`...\Procrun 2.0\<service>\Parameters\Java\Options`) as well as the command line.
+- **Environment options**: Windows doesn't let PowerShell read another process's environment, so
+  `JAVA_TOOL_OPTIONS` / `JDK_JAVA_OPTIONS` / `_JAVA_OPTIONS` come from the machine-wide
+  environment that services inherit. `jcmd` reports the real flag value when it can attach.
+- **Installs** are found under Program Files, ProgramData, `C:\Java`, `C:\Atlassian`, user `.jdks`
+  and `.gradle\jdks`, scoop, `JAVA_HOME`, `PATH` and the vendor registry keys (JavaSoft, Adoptium,
+  Corretto, Azul, Microsoft, BellSoft, Semeru). With no `release` file the version comes from
+  `java.exe`'s version resource, so nothing is executed.
+- **Patched but not restarted**: flagged when the loaded `jvm.dll` is gone from disk or `jcmd`
+  reports an older version than the install.
+- **CPU**: PowerShell 7.1+ reads CPUID leaf 7 directly (exact). Windows PowerShell 5.1 can only ask
+  Windows whether AVX-512F exists: without it the CPU is ruled out, with it the CPU is assumed
+  capable. Run under `pwsh` for an exact answer.
+- `jcmd` often cannot attach to services running as LocalSystem from another account; those JVMs
+  fall back to the command line and registry options, and the finding says so.
+
+CI runs the Pester tests and an end-to-end scan on a real Windows runner under both shells, with
+two live Temurin 17.0.12 JVMs (one started with `-XX:-UseBASE64Intrinsics`).
+
 ## Verdicts and exit codes
 
 | Verdict | Meaning | Exit |
@@ -57,6 +105,7 @@ JVMs running inside containers are found from the host through `/proc/<pid>/root
 | `AFFECTED_VERSION_CPU_NOT_EXPOSED` | affected version on a CPU without VBMI: patch anyway, images move hosts | 2 |
 | `REVIEW` | version unreadable or newer than the advisory | 2 |
 | `OK` | fixed or never affected | 0 |
+| (error) | the scan itself failed (PowerShell edition) | 3 |
 
 ## Affected ranges used
 
@@ -88,4 +137,8 @@ Upgrade to the 17 Nov 2026 builds and restart the JVM. Until then, add `-XX:-Use
 
 ```bash
 python3 -m unittest -v tests/test_detect.py
+```
+
+```powershell
+Invoke-Pester -Path tests\java2shell-detect.Tests.ps1 -Output Detailed
 ```
